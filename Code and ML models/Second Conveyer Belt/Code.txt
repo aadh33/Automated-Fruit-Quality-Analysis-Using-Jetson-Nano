@@ -1,0 +1,142 @@
+/*
+ * DC Motor Direction Control for Arduino Nano
+ * 
+ * This sketch controls the rotation direction of DC motors based on two GPIO input pins.
+ * It uses an H-Bridge driver (like L298N or L293D) to control motor direction.
+ * 
+ * Hardware connections:
+ * - Input GPIO1 (pin 2): When HIGH, motor rotates clockwise
+ * - Input GPIO2 (pin 3): When HIGH, motor rotates counter-clockwise
+ * - Motor Driver pins connected to Arduino pins 9, 10, 11, 12
+ * 
+ * Operation:
+ * - GPIO1 HIGH, GPIO2 LOW: Clockwise rotation
+ * - GPIO1 LOW, GPIO2 HIGH: Counter-clockwise rotation
+ * - Both LOW: Motor stops
+ * - Both HIGH: Motor stops (safety measure)
+ */
+
+// Input pins (Direction control signals)
+const int GPIO_CLOCKWISE = 2;        // Input pin for clockwise rotation
+const int GPIO_COUNTERCLOCKWISE = 3; // Input pin for counter-clockwise rotation
+
+// Output pins to H-Bridge motor driver
+// For a single motor with L298N/L293D
+const int MOTOR1_IN1 = 9;  // Motor driver input 1
+const int MOTOR1_IN2 = 10; // Motor driver input 2
+const int MOTOR1_EN = 11;  // Motor driver enable pin (for PWM speed control)
+
+// For a second motor (if needed)
+const int MOTOR2_IN1 = 5;  // Motor driver input 3
+const int MOTOR2_IN2 = 6;  // Motor driver input 4
+const int MOTOR2_EN = 7;   // Motor driver enable pin (for PWM speed control)
+
+// Variables to track motor state
+bool isClockwise = false;
+bool isCounterClockwise = false;
+const int MOTOR_SPEED = 200;  // Motor speed (0-255 for PWM)
+
+void setup() {
+  // Initialize serial communication
+  Serial.begin(9600);
+  Serial.println("DC Motor Direction Control");
+  
+  // Configure input pins with internal pull-down resistors
+  pinMode(GPIO_CLOCKWISE, INPUT);
+  pinMode(GPIO_COUNTERCLOCKWISE, INPUT);
+  
+  // Configure output pins for motor control
+  pinMode(MOTOR1_IN1, OUTPUT);
+  pinMode(MOTOR1_IN2, OUTPUT);
+  pinMode(MOTOR1_EN, OUTPUT);
+  
+  pinMode(MOTOR2_IN1, OUTPUT);
+  pinMode(MOTOR2_IN2, OUTPUT);
+  pinMode(MOTOR2_EN, OUTPUT);
+  
+  // Initially stop the motors
+  stopMotors();
+}
+
+void loop() {
+  // Read the GPIO input states
+  bool clockwiseSignal = digitalRead(GPIO_CLOCKWISE);
+  bool counterClockwiseSignal = digitalRead(GPIO_COUNTERCLOCKWISE);
+  
+  // Handle the input signals
+  if (clockwiseSignal && !counterClockwiseSignal) {
+    // GPIO1 HIGH, GPIO2 LOW: Rotate clockwise
+    if (!isClockwise || isCounterClockwise) {
+      rotateClockwise();
+      Serial.println("Motors rotating clockwise");
+    }
+  }
+  else if (!clockwiseSignal && counterClockwiseSignal) {
+    // GPIO1 LOW, GPIO2 HIGH: Rotate counter-clockwise
+    if (isClockwise || !isCounterClockwise) {
+      rotateCounterClockwise();
+      Serial.println("Motors rotating counter-clockwise");
+    }
+  }
+  else {
+    // Both LOW or both HIGH: Stop motors (safety measure)
+    if (isClockwise || isCounterClockwise) {
+      stopMotors();
+      Serial.println("Motors stopped");
+    }
+  }
+  
+  // Small delay to avoid rapid switching and noise issues
+  delay(50);
+}
+
+// Function to rotate motors clockwise
+void rotateClockwise() {
+  // Motor 1
+  digitalWrite(MOTOR1_IN1, HIGH);
+  digitalWrite(MOTOR1_IN2, LOW);
+  analogWrite(MOTOR1_EN, MOTOR_SPEED);
+  
+  // Motor 2 (if using two motors, might need reversed signals depending on mounting)
+  digitalWrite(MOTOR2_IN1, HIGH);
+  digitalWrite(MOTOR2_IN2, LOW);
+  analogWrite(MOTOR2_EN, MOTOR_SPEED);
+  
+  // Update state
+  isClockwise = true;
+  isCounterClockwise = false;
+}
+
+// Function to rotate motors counter-clockwise
+void rotateCounterClockwise() {
+  // Motor 1
+  digitalWrite(MOTOR1_IN1, LOW);
+  digitalWrite(MOTOR1_IN2, HIGH);
+  analogWrite(MOTOR1_EN, MOTOR_SPEED);
+  
+  // Motor 2 (if using two motors, might need reversed signals depending on mounting)
+  digitalWrite(MOTOR2_IN1, LOW);
+  digitalWrite(MOTOR2_IN2, HIGH);
+  analogWrite(MOTOR2_EN, MOTOR_SPEED);
+  
+  // Update state
+  isClockwise = false;
+  isCounterClockwise = true;
+}
+
+// Function to stop motors
+void stopMotors() {
+  // Method 1: Set both inputs LOW
+  digitalWrite(MOTOR1_IN1, LOW);
+  digitalWrite(MOTOR1_IN2, LOW);
+  digitalWrite(MOTOR2_IN1, LOW);
+  digitalWrite(MOTOR2_IN2, LOW);
+  
+  // Method 2: Disable the enable pins
+  // analogWrite(MOTOR1_EN, 0);
+  // analogWrite(MOTOR2_EN, 0);
+  
+  // Update state
+  isClockwise = false;
+  isCounterClockwise = false;
+}

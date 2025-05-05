@@ -1,0 +1,198 @@
+/*
+ * AC Motor Speed Control using Thyristor and Arduino Uno
+ * 
+ * This sketch controls the speed of an AC motor using a thyristor (SCR).
+ * Unlike TRIACs, thyristors only conduct in one direction, so this implementation
+ * will need to account for half-wave rectification.
+ * 
+ * Hardware Requirements:
+ * - Arduino Uno
+ * - Thyristor (SCR) such as BT151 or TYN612
+ * - MCT2E or similar optocoupler for gate drive isolation
+ * - Zero-crossing detector circuit (can use transformer + diode bridge)
+ * - 10K potentiometer for manual speed control
+ * - Safety components (snubber circuit, fuse, etc.)
+ */
+
+// Pin definitions
+const int ZERO_CROSS_PIN = 2;    // Zero-crossing detection (must be interrupt pin 2 or 3 on Arduino Uno)
+const int THYRISTOR_PIN = 9;     // Thyristor gate control pin
+const int POT_PIN = A0;          // Potentiometer for speed control
+const int MOTOR_ENABLE_PIN = 7;  // Enable/disable motor
+
+// AC power variables
+const int AC_FREQ = 50;                      // AC frequency in Hz (50Hz or 60Hz depending on your country)
+const int HALF_CYCLE_MICROS = 1000000 / (AC_FREQ * 2); // Duration of half-cycle in microseconds
+const int FIRING_DELAY_MAX = HALF_CYCLE_MICROS - 200;  // Maximum delay before firing thyristor
+
+// Control variables
+volatile int firingDelay = FIRING_DELAY_MAX; // Start with minimum speed (maximum delay)
+volatile boolean zeroCrossDetected = false;  // Flag for zero crossing
+volatile boolean positiveHalfCycle = true;   // Track which half-cycle we're in
+int motorSpeed = 0;                          // Speed value (0-100%)
+boolean motorEnabled = false;                // Motor enable status
+
+// Timing variables
+unsigned long lastPotReadTime = 0;
+const int POT_READ_INTERVAL = 100; // Read potentiometer every 100ms
+
+void setup() {
+  // Initialize serial communication
+  Serial.begin(9600);
+  Serial.println("AC Motor Speed Control using Thyristor");
+  Serial.println("Commands: 'E' - Enable, 'D' - Disable, 'Sxx' - Set speed (0-100)");
+  
+  // Configure pins
+  pinMode(ZERO_CROSS_PIN, INPUT);
+  pinMode(THYRISTOR_PIN, OUTPUT);
+  pinMode(MOTOR_ENABLE_PIN, OUTPUT);
+  
+  // Initialize outputs
+  digitalWrite(THYRISTOR_PIN, LOW);
+  digitalWrite(MOTOR_ENABLE_PIN, LOW);
+  
+  // Attach interrupt for zero crossing detection
+  attachInterrupt(digitalPinToInterrupt(ZERO_CROSS_PIN), zeroCrossing, RISING);
+  
+  // Initialize Timer1 for precise timing control
+  noInterrupts();  // Disable interrupts during setup
+  TCCR1A = 0;
+  TCCR1B = 0;
+  TCNT1 = 0;
+  interrupts();   // Enable interrupts
+  
+  Serial.print("Half-cycle duration: ");
+  Serial.print(HALF_CYCLE_MICROS);
+  Serial.println(" microseconds");
+}
+
+void loop() {
+  // Read potentiometer for manual speed control
+  if (millis() - lastPotReadTime >= POT_READ_INTERVAL) {
+    int potValue = analogRead(POT_PIN);
+    // Map from potentiometer range (0-1023) to speed percentage (0-100)
+    int newSpeed = map(potValue, 0, 1023, 0, 100);
+    
+    // Only update if speed has changed
+    if (newSpeed != motorSpeed) {
+      setMotorSpeed(newSpeed);
+    }
+    
+    lastPotReadTime = millis();
+  }
+  
+  // Check for serial commands
+  if (Serial.available() > 0) {
+    char cmd = Serial.read();
+    
+    switch (cmd) {
+      case 'E': // Enable motor
+      case 'e':
+        enableMotor(true);
+        break;
+        
+      case 'D': // Disable motor
+      case 'd':
+        enableMotor(false);
+        break;
+        
+      case 'S': // Set speed (0-100)
+      case 's':
+        if (Serial.available() >= 2) {
+          int tens = Serial.read() - '0';
+          int ones = Serial.read() - '0';
+          if (tens >= 0 && tens <= 9 && ones >= 0 && ones <= 9) {
+            int newSpeed = tens * 10 + ones;
+            if (newSpeed <= 100) {
+              setMotorSpeed(newSpeed);
+              Serial.print("Speed set to: ");
+              Serial.println(newSpeed);
+            }
+          }
+        }
+        break;
+    }
+    
+    // Clear any remaining characters in the buffer
+    while (Serial.available() > 0) {
+      Serial.read();
+    }
+  }
+  
+  // If zero crossing was detected, a new half-cycle is starting
+  if (zeroCrossDetected && motorEnabled) {
+    zeroCrossDetected = false;
+    
+    // For thyristor control, we only fire during positive half-cycles
+    // (unless using a full-bridge with two thyristors)
+    if (positiveHalfCycle && firingDelay < FIRING_DELAY_MAX) {
+      // Use Timer1 for precise delay
+      noInterrupts();
+      TCNT1 = 0;                    // Reset timer counter
+      OCR1A = firingDelay / 4;      // Set compare value (adjusted for prescaler)
+      TCCR1B = (1 << CS11);         // Set prescaler to 8 and start timer
+      TIMSK1 |= (1 << OCIE1A);      // Enable timer compare interrupt
+      interrupts();
+    }
+  }
+}
+
+// Zero crossing detection interrupt handler
+void zeroCrossing() {
+  zeroCrossDetected = true;
+  
+  // Toggle half-cycle flag - this tracks whether we're in the positive or negative half-cycle
+  positiveHalfCycle = !positiveHalfCycle;
+  
+  // Ensure thyristor gate is off at zero crossing
+  digitalWrite(THYRISTOR_PIN, LOW);
+}
+
+// Timer1 compare interrupt service routine - fires the thyristor
+ISR(TIMER1_COMPA_vect) {
+  // Turn off the timer until next zero crossing
+  TIMSK1 &= ~(1 << OCIE1A);
+  TCCR1B = 0;
+  
+  // Fire the thyristor - a pulse is sufficient as the thyristor will remain
+  // conducting until the current drops below the holding current
+  digitalWrite(THYRISTOR_PIN, HIGH);
+  delayMicroseconds(100);  // Keep thyristor gate on for 100µs
+  digitalWrite(THYRISTOR_PIN, LOW);
+}
+
+// Set motor speed (0-100%)
+void setMotorSpeed(int speed) {
+  // Constrain speed value
+  motorSpeed = constrain(speed, 0, 100);
+  
+  // Calculate firing delay based on speed
+  // 0% speed = maximum delay (FIRING_DELAY_MAX)
+  // 100% speed = minimum delay (use 200µs as minimum for safety)
+  if (motorSpeed == 0) {
+    firingDelay = FIRING_DELAY_MAX;
+  } else {
+    // Note: Inverting the relationship between speed and delay
+    // Higher speed means lower delay
+    firingDelay = map(motorSpeed, 1, 100, FIRING_DELAY_MAX - 300, 200);
+  }
+  
+  Serial.print("Motor speed: ");
+  Serial.print(motorSpeed);
+  Serial.print("%, Firing delay: ");
+  Serial.println(firingDelay);
+}
+
+// Enable or disable the motor
+void enableMotor(boolean enable) {
+  motorEnabled = enable;
+  digitalWrite(MOTOR_ENABLE_PIN, enable ? HIGH : LOW);
+  
+  Serial.print("Motor ");
+  Serial.println(motorEnabled ? "enabled" : "disabled");
+  
+  // If disabling, ensure thyristor gate is off
+  if (!motorEnabled) {
+    digitalWrite(THYRISTOR_PIN, LOW);
+  }
+}
